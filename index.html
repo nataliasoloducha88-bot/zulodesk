@@ -162,6 +162,13 @@ nav button { flex: 1; border: 0; background: none; padding: 8px; display: flex; 
 nav button svg { width: 26px; height: 26px; }
 nav button[aria-selected="true"] { color: var(--accent); }
 
+.join { order: 2; display: flex; flex-direction: column; gap: 8px; padding: 14px; border-radius: 16px; border: 1px dashed var(--line); }
+.join label { font-size: 0.85rem; color: var(--muted); font-weight: 600; }
+.join-row { display: flex; gap: 8px; }
+.join input { flex: 1; min-width: 0; font: inherit; padding: 10px 12px; border-radius: 12px; border: 2px solid var(--line); background: var(--surface); color: var(--ink); }
+.join .btn { flex: 0 0 auto; padding: 10px 16px; }
+.join-msg { margin: 0; font-size: 0.85rem; color: var(--danger); min-height: 1em; }
+.toast { position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 30; background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 99px; font-weight: 700; font-size: 0.9rem; max-width: calc(100% - 32px); text-align: center; }
 /* Ranking: Szczoch (lvl 1) < Żulix (lvl 2) < Final Boss (lvl 3) */
 .rank { display: inline-flex; align-items: center; gap: 8px; align-self: center; padding: 6px 12px 6px 6px; border-radius: 99px; font-weight: 800; line-height: 1.1; max-width: 100%; }
 .rank-lvl { font-size: 0.68rem; letter-spacing: 0.08em; padding: 4px 7px; border-radius: 99px; background: rgba(0,0,0,0.22); color: #fff; white-space: nowrap; }
@@ -240,6 +247,14 @@ nav button[aria-selected="true"] { color: var(--accent); }
   <!-- Kolekcja -->
   <section class="view" id="v-dex" hidden>
     <div class="dex" id="dex"></div>
+    <div class="join" id="join" hidden>
+      <label for="joinInput">Masz link do innej kolekcji? Wklej go tutaj</label>
+      <div class="join-row">
+        <input id="joinInput" placeholder="https://…/zulodesk/#…" autocomplete="off">
+        <button class="btn primary" id="joinBtn">Dołącz</button>
+      </div>
+      <p class="join-msg" id="joinMsg"></p>
+    </div>
     <div class="empty" id="dexEmpty" hidden>
       <svg class="ghost-sil" viewBox="0 0 60 80" fill="currentColor"><circle cx="30" cy="14" r="11"/><path d="M12 80V44c0-10 8-18 18-18s18 8 18 18v36z"/></svg>
       <strong>Nikogo jeszcze nie złapano</strong>
@@ -288,15 +303,30 @@ const FIREBASE_CONFIG = {
   appId: "1:879059121285:web:fabf5770c93536136025ec",
 };
 
+// Klucz bierzemy z linku, a gdy go brak (otwarcie z ikony, sam adres) z pamięci telefonu, żeby nie zakładać nowej kolekcji.
+const KEY_RE = /^[A-Za-z0-9]{24,64}$/;
+function savedKey() { try { return localStorage.getItem("zulodesk-room") || ""; } catch { return ""; } }
+function rememberKey(k) { try { localStorage.setItem("zulodesk-room", k); } catch {} }
 function roomKey() {
   let k = location.hash.slice(1);
-  if (!/^[A-Za-z0-9]{24,}$/.test(k)) {
+  if (!KEY_RE.test(k)) k = savedKey();
+  if (!KEY_RE.test(k)) {
     const a = crypto.getRandomValues(new Uint8Array(24));
     k = Array.from(a, (b) => "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"[b % 57]).join("");
-    history.replaceState(null, "", "#" + k);
   }
+  if (location.hash.slice(1) !== k) history.replaceState(null, "", "#" + k);
+  rememberKey(k);
   return k;
 }
+function keyFromText(t) {
+  const m = String(t).trim().match(/#?([A-Za-z0-9]{24,64})\s*$/);
+  return m ? m[1] : null;
+}
+// otwarcie innego linku z kluczem w tej samej karcie
+window.addEventListener("hashchange", () => {
+  const k = location.hash.slice(1);
+  if (KEY_RE.test(k) && k !== savedKey()) { rememberKey(k); location.reload(); }
+});
 
 const cloud = {
   col: null, fs: null,
@@ -530,7 +560,9 @@ function renderPending() {
     if (shared) {
       save.disabled = true; save.textContent = "Zapisuję…";
       // zapis trafia od razu do lokalnej kopii i widoku; do chmury dochodzi w tle
-      cloud.put(c).catch((e) => { console.error(e); setStatus("Nie udało się zapisać naklejki w kolekcji."); });
+      cloud.put(c)
+        .then(() => toast("Zapisano w kolekcji"))
+        .catch((e) => { console.error(e); toast("Nie udało się zapisać naklejki. Sprawdź internet i złap jeszcze raz."); });
     } else {
       catches.push(c);
       await store.put(c);
@@ -764,6 +796,7 @@ startCamera();
 (async () => {
   shared = await cloud.open();
   $("share").hidden = !shared;
+  $("join").hidden = !shared;
   if (shared) {
     cloud.subscribe((list) => {
       catches = list.sort((a, b) => a.no - b.no);
@@ -776,6 +809,22 @@ startCamera();
     updateCount();
   }
 })();
+
+$("joinBtn").onclick = () => {
+  const k = keyFromText($("joinInput").value);
+  if (!k) { $("joinMsg").textContent = "To nie wygląda na link do kolekcji Żulodesk. Skopiuj cały link razem z częścią po #."; return; }
+  rememberKey(k);
+  location.hash = k;
+  location.reload();
+};
+
+function toast(text) {
+  document.querySelectorAll(".toast").forEach((t) => t.remove());
+  const t = el("div", "toast", text);
+  t.setAttribute("role", "status");
+  document.body.append(t);
+  setTimeout(() => t.remove(), 2800);
+}
 
 $("share").onclick = async () => {
   const url = location.href;
