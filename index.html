@@ -162,6 +162,24 @@ nav button { flex: 1; border: 0; background: none; padding: 8px; display: flex; 
 nav button svg { width: 26px; height: 26px; }
 nav button[aria-selected="true"] { color: var(--accent); }
 
+/* Ranking: Szczoch (lvl 1) < Żulix (lvl 2) < Final Boss (lvl 3) */
+.rank { display: inline-flex; align-items: center; gap: 8px; align-self: center; padding: 6px 12px 6px 6px; border-radius: 99px; font-weight: 800; line-height: 1.1; max-width: 100%; }
+.rank-lvl { font-size: 0.68rem; letter-spacing: 0.08em; padding: 4px 7px; border-radius: 99px; background: rgba(0,0,0,0.22); color: #fff; white-space: nowrap; }
+.rank-name { font-family: var(--font-display); font-size: 0.95rem; overflow-wrap: anywhere; }
+.rank-szczoch { background: #8fa36a; color: #1d2410; }
+.rank-zulix { background: linear-gradient(135deg, #ffcf3a, #f29a1d); color: #3a2300; }
+.rank-boss { background: linear-gradient(135deg, #d92d3a, #7a1230); color: #fff; box-shadow: 0 0 0 2px #ffcf3a, 0 6px 18px rgba(217,45,58,0.45); }
+.card .rank { align-self: flex-start; padding: 3px 8px 3px 3px; gap: 5px; }
+.card .rank-lvl { font-size: 0.58rem; padding: 3px 5px; }
+.card .rank-name { font-size: 0.72rem; }
+.card-boss { border: 2px solid #d92d3a; }
+.result .rank { font-size: 1.15rem; padding: 8px 18px 8px 8px; }
+.result .rank-name { font-size: 1.25rem; }
+.rank.reveal { animation: rankIn 0.7s cubic-bezier(.2,1.6,.4,1) both 0.35s; }
+.rank-boss.reveal { animation: rankIn 0.7s cubic-bezier(.2,1.6,.4,1) both 0.35s, bossGlow 1.2s ease-in-out 1.05s 3; }
+@keyframes rankIn { from { transform: scale(0.2) rotate(-12deg); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes bossGlow { 50% { box-shadow: 0 0 0 2px #ffcf3a, 0 0 28px rgba(255,207,58,0.9); } }
+@media (prefers-reduced-motion: reduce) { .rank.reveal { animation: none; } }
 .spinner { width: 46px; height: 46px; border-radius: 50%; border: 5px solid var(--line); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .album img, .spinner { animation-duration: 0s; } }
@@ -481,7 +499,7 @@ async function processSource(source, w, h) {
     $("resultBody").append(el("p", "hint", "Coś poszło nie tak przy robieniu naklejki."), rowOf(b));
     return;
   }
-  pending = { img: (shared && toSharedDataURL(made.canvas)) || toDataURL(made.canvas), pose: made.pose };
+  pending = { img: (shared && toSharedDataURL(made.canvas)) || toDataURL(made.canvas), pose: made.pose, rank: rollRank() };
   renderPending();
 }
 
@@ -494,6 +512,7 @@ function renderPending() {
   const no = String(catches.length + 1).padStart(3, "0");
   const tags = el("div", "tags");
   tags.append(el("span", "tag", "Nr " + no), el("span", "tag alt", "Poza: " + pending.pose));
+  const rank = rankBadge(pending.rank, true);
   const field = el("div", "field");
   const lab = el("label", "", "Podpis");
   lab.htmlFor = "nameInput";
@@ -507,7 +526,7 @@ function renderPending() {
   inp.onkeydown = (e) => { if (e.key === "Enter" && inp.value.trim()) save.click(); };
   drop.onclick = () => { pending = null; showView("camera"); };
   save.onclick = async () => {
-    const c = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), no: catches.length ? Math.max(...catches.map((x) => x.no)) + 1 : 1, name: inp.value.trim(), pose: pending.pose, img: pending.img, at: Date.now() };
+    const c = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), no: catches.length ? Math.max(...catches.map((x) => x.no)) + 1 : 1, name: inp.value.trim(), pose: pending.pose, rank: pending.rank, img: pending.img, at: Date.now() };
     if (shared) {
       save.disabled = true; save.textContent = "Zapisuję…";
       // zapis trafia od razu do lokalnej kopii i widoku; do chmury dochodzi w tle
@@ -520,7 +539,7 @@ function renderPending() {
     updateCount();
     showView("dex");
   };
-  body.append(el("p", "caught", "Mamy go!"), album, tags, field, rowOf(drop, save));
+  body.append(el("p", "caught", "Mamy go!"), rank, album, tags, field, rowOf(drop, save));
   inp.focus();
 }
 
@@ -534,7 +553,8 @@ function renderDex() {
     const pic = el("div", "pic");
     const im = new Image(); im.src = c.img; im.alt = c.name; im.loading = "lazy";
     pic.append(im);
-    card.append(pic, el("span", "no", "NR " + String(c.no).padStart(3, "0")), el("span", "nm", c.name));
+    card.append(pic, rankBadge(c.rank), el("span", "no", "NR " + String(c.no).padStart(3, "0")), el("span", "nm", c.name));
+    card.classList.add("card-" + rankOf(c.rank).id);
     card.onclick = () => openDetail(c);
     grid.append(card);
   });
@@ -568,11 +588,31 @@ function openDetail(c) {
     actions.replaceWith(rowOf(back, sure));
   };
   const actions = rowOf(del, close);
-  s.append(el("p", "caught", c.name), album, tags, actions);
+  s.append(el("p", "caught", c.name), rankBadge(c.rank), album, tags, actions);
   $("sheetBg").hidden = false;
 }
 function closeSheet() { $("sheetBg").hidden = true; }
 $("sheetBg").onclick = (e) => { if (e.target === $("sheetBg")) closeSheet(); };
+
+/* ---------- Ranking ---------- */
+// losowany przy każdym złapaniu; im wyższy poziom, tym rzadszy
+const RANKS = [
+  { id: "szczoch", lvl: 1, name: "Szczoch Menel", chance: 60 },
+  { id: "zulix", lvl: 2, name: "Żulix Tyskie Piwsko", chance: 30 },
+  { id: "boss", lvl: 3, name: "Final Boss", chance: 10 },
+];
+function rollRank() {
+  let r = Math.random() * 100;
+  for (const k of RANKS) { if ((r -= k.chance) < 0) return k.id; }
+  return RANKS[0].id;
+}
+function rankOf(id) { return RANKS.find((k) => k.id === id) || RANKS[0]; }
+function rankBadge(id, reveal = false) {
+  const k = rankOf(id);
+  const b = el("div", "rank rank-" + k.id + (reveal ? " reveal" : ""));
+  b.append(el("span", "rank-lvl", "LVL " + k.lvl), el("span", "rank-name", k.name));
+  return b;
+}
 
 /* ---------- Pomocnicze ---------- */
 function el(tag, cls, text) {
