@@ -56,6 +56,8 @@ h1 { margin: 0; font-family: var(--font-display); font-weight: 800; font-size: 1
 h1 span { color: var(--accent); }
 .counter { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-variant-numeric: tabular-nums; }
 .counter b { color: var(--ink); font-size: 1rem; }
+.head-right { display: flex; align-items: center; gap: 10px; }
+.share { border: 0; background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 0.8rem; padding: 7px 12px; border-radius: 99px; }
 
 main { flex: 1; min-height: 0; overflow-y: auto; }
 .view { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 4px 24px; display: flex; flex-direction: column; gap: 16px; }
@@ -167,7 +169,10 @@ nav button[aria-selected="true"] { color: var(--accent); }
 
 <header>
   <h1>Żulo<span>desk</span></h1>
-  <div class="counter">złapanych <b id="count">0</b></div>
+  <div class="head-right">
+    <div class="counter">złapanych <b id="count">0</b></div>
+    <button class="share" id="share" hidden>Udostępnij</button>
+  </div>
 </header>
 
 <main>
@@ -251,8 +256,51 @@ let catches = [];
 let stream = null;
 let facing = "environment";
 let pending = null;
+let shared = false;
 
-/* ---------- Storage (IndexedDB, z zapasowym trybem w pamięci) ---------- */
+/* ---------- Wspólna kolekcja (Firebase Firestore) ---------- */
+// Klucz kolekcji siedzi w linku po "#". Kto ma link, ten widzi i dopisuje naklejki; bez klucza nie da się ich znaleźć.
+// klucze aplikacji webowej Firebase są publiczne z założenia; dostęp ograniczają reguły Firestore
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCaG_nEUsbz0-0h-T_Inl6Ko1o8Ixqb19A",
+  authDomain: "zulodesk.firebaseapp.com",
+  projectId: "zulodesk",
+  storageBucket: "zulodesk.firebasestorage.app",
+  messagingSenderId: "879059121285",
+  appId: "1:879059121285:web:fabf5770c93536136025ec",
+};
+
+function roomKey() {
+  let k = location.hash.slice(1);
+  if (!/^[A-Za-z0-9]{24,}$/.test(k)) {
+    const a = crypto.getRandomValues(new Uint8Array(24));
+    k = Array.from(a, (b) => "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"[b % 57]).join("");
+    history.replaceState(null, "", "#" + k);
+  }
+  return k;
+}
+
+const cloud = {
+  col: null, fs: null,
+  async open() {
+    if (!FIREBASE_CONFIG) return false;
+    try {
+      const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
+      this.fs = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+      const db = this.fs.initializeFirestore(initializeApp(FIREBASE_CONFIG), { localCache: this.fs.persistentLocalCache() });
+      this.col = this.fs.collection(db, "rooms", roomKey(), "catches");
+      return true;
+    } catch (e) { console.error(e); return false; }
+  },
+  subscribe(cb) {
+    this.fs.onSnapshot(this.col, (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (e) => { console.error(e); setStatus("Nie mogę połączyć się z kolekcją. Sprawdź internet."); });
+  },
+  put(c) { const { id, ...data } = c; return this.fs.setDoc(this.fs.doc(this.col, id), data); },
+  del(id) { return this.fs.deleteDoc(this.fs.doc(this.col, id)); },
+};
+
+/* ---------- Pamięć lokalna (gdy brak Firebase) ---------- */
 const store = {
   db: null,
   async open() {
@@ -382,6 +430,21 @@ function toDataURL(canvas, max = 640) {
   return c.toDataURL("image/png");
 }
 
+// Naklejka do wspólnej kolekcji: WebP (Safari daje PNG), zmniejszana aż zmieści się w limicie dokumentu
+function toSharedDataURL(canvas) {
+  for (let max = 560; max >= 200; max -= 90) {
+    const s = Math.min(1, max / Math.max(canvas.width, canvas.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(canvas.width * s); c.height = Math.round(canvas.height * s);
+    const ctx = c.getContext("2d");
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(canvas, 0, 0, c.width, c.height);
+    const url = c.toDataURL("image/webp", 0.82);
+    if (url.length < 700000) return url;
+  }
+  return null;
+}
+
 /* ---------- Aparat ---------- */
 async function startCamera() {
   stopCamera();
@@ -418,7 +481,7 @@ async function processSource(source, w, h) {
     $("resultBody").append(el("p", "hint", "Coś poszło nie tak przy robieniu naklejki."), rowOf(b));
     return;
   }
-  pending = { img: toDataURL(made.canvas), pose: made.pose };
+  pending = { img: (shared && toSharedDataURL(made.canvas)) || toDataURL(made.canvas), pose: made.pose };
   renderPending();
 }
 
@@ -444,9 +507,15 @@ function renderPending() {
   inp.onkeydown = (e) => { if (e.key === "Enter" && inp.value.trim()) save.click(); };
   drop.onclick = () => { pending = null; showView("camera"); };
   save.onclick = async () => {
-    const c = { id: Date.now().toString(36), no: catches.length ? Math.max(...catches.map((x) => x.no)) + 1 : 1, name: inp.value.trim(), pose: pending.pose, img: pending.img, at: Date.now() };
-    catches.push(c);
-    await store.put(c);
+    const c = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), no: catches.length ? Math.max(...catches.map((x) => x.no)) + 1 : 1, name: inp.value.trim(), pose: pending.pose, img: pending.img, at: Date.now() };
+    if (shared) {
+      save.disabled = true; save.textContent = "Zapisuję…";
+      // zapis trafia od razu do lokalnej kopii i widoku; do chmury dochodzi w tle
+      cloud.put(c).catch((e) => { console.error(e); setStatus("Nie udało się zapisać naklejki w kolekcji."); });
+    } else {
+      catches.push(c);
+      await store.put(c);
+    }
     pending = null;
     updateCount();
     showView("dex");
@@ -487,8 +556,12 @@ function openDetail(c) {
     const sure = el("button", "btn danger", "Tak, usuń");
     const back = el("button", "btn ghost", "Anuluj");
     sure.onclick = async () => {
-      catches = catches.filter((x) => x.id !== c.id);
-      await store.del(c.id);
+      if (shared) {
+        cloud.del(c.id).catch((e) => console.error(e));
+      } else {
+        catches = catches.filter((x) => x.id !== c.id);
+        await store.del(c.id);
+      }
       updateCount(); renderDex(); closeSheet();
     };
     back.onclick = () => openDetail(c);
@@ -646,11 +719,31 @@ $("pickCamera").onchange = (e) => handleFile(e.target);
 $("pickGallery").onchange = (e) => handleFile(e.target);
 
 /* ---------- Start ---------- */
+segReady = loadSegmenter();
+startCamera();
 (async () => {
-  await store.open();
-  catches = ((await store.all()) || []).sort((a, b) => a.no - b.no);
-  updateCount();
-  startCamera();
-  segReady = loadSegmenter();
+  shared = await cloud.open();
+  $("share").hidden = !shared;
+  if (shared) {
+    cloud.subscribe((list) => {
+      catches = list.sort((a, b) => a.no - b.no);
+      updateCount();
+      if (!$("v-dex").hidden) renderDex();
+    });
+  } else {
+    await store.open();
+    catches = ((await store.all()) || []).sort((a, b) => a.no - b.no);
+    updateCount();
+  }
 })();
+
+$("share").onclick = async () => {
+  const url = location.href;
+  try {
+    if (navigator.share) { await navigator.share({ title: "Żulodesk", text: "Nasza kolekcja w Żulodesku", url }); return; }
+  } catch (e) { if (e.name === "AbortError") return; }
+  try { await navigator.clipboard.writeText(url); $("share").textContent = "Skopiowano!"; }
+  catch { $("share").textContent = "Skopiuj link z paska adresu"; }
+  setTimeout(() => ($("share").textContent = "Udostępnij"), 2500);
+};
 </script>
